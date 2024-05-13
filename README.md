@@ -19,3 +19,4 @@ pip install -e .
 
 # Contributors
 Franklin Liou
+Luc Nguyen
