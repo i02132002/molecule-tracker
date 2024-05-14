@@ -24,5 +24,6 @@ six==1.16.0
 slicerator==1.1.0
 threadpoolctl==3.1.0
 tifffile==2021.11.2
-trackpy==0.4.2
 typing_extensions==4.5.0
+
+git+https://github.com/LC-Nguyen/trackpy.git@master
