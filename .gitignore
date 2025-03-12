@@ -9,3 +9,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+electromigration_*
+Sergey_images*
+analysis
+diffusion-2
