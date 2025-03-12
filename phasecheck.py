@@ -17,28 +17,22 @@ from IPython.display import clear_output
 from PIL import Image
 import trackpy as tp
 from sxmreader import SXMReader
-import math
-from collections import defaultdict
-import itertools
 
 
 
 # Definitions for various fitting functions
-#pwrlaw = lambda t, c, K, a: (K + c) * (t**a)
-#pwrlawD = lambda t, D, a: 4 * D * (t**a)
-r2 = lambda y, ypred: np.abs(np.sum((y - ypred)**2) / np.sum((y - np.mean(y))**2))
+pwrlaw = lambda t, c, K, a: (K + c) * (t**a)
+pwrlawD = lambda t, D, a: 4 * D * (t**a)
+r2 = lambda y, ypred: np.abs(1 - np.sum((y - ypred)**2) / np.sum((y - np.mean(y))**2))
 rmse = lambda y, ypred: np.sqrt(np.sum((y - ypred)**2) / len(y))
 constfunc = lambda x, c: x/x*c
 
-##GOING TO DO FITTING IN LOG SCALE BECAUSE MORE DIFFERENTATION BETWEEN EXP AND ALG DECAY
-
-#pwrlawdecay = lambda x, m,d,a: m * (x)**(-a)
+pwrlawdecay = lambda x, m,d,a: m * (x)**(-a)
 #pwrlawdecay = lambda x, m,d,a: m * (x-d)**(-a)
-#pwrlawdecay2 = lambda x,m,d,a: m * (x)**(-a)+d
-pwrlawdecay=lambda x,A,n: A-n*x
-expdecay = lambda x, M,a: M+-np.exp(x)/a
+pwrlawdecay2 = lambda x,m,d,a: m * (x)**(-a)+d
 
-#expdecay2 = lambda x, m,d,a: m * np.exp(-(x) / a)+d
+expdecay = lambda x, m,a: m * np.exp(-(x) / a)
+expdecay2 = lambda x, m,d,a: m * np.exp(-(x) / a)+d
 
 def function(a, x, n):
     term1 = a ** (-n)
@@ -50,21 +44,37 @@ def function(a, x, n):
   
     return term1 + term2 + term3 + term4 + term5 + term6
 
-def get_cffits(x_, y_, fit_id,sigma=None,r2fit=1,):
-    x=np.log(x_)
-    y=np.log(y_)
-    popt_constfunc = curve_fit(constfunc, x,y,sigma=sigma,maxfev=3000, )[0]
-    popt_pwrlawdecay = curve_fit(pwrlawdecay, x,y,sigma=sigma,
-                                     maxfev=3000,p0=(10,1),
-                                     bounds=((-np.inf,0),
-                                     (np.inf,np.inf)))[0]
-    popt_expdecay = curve_fit(expdecay, x, y,sigma=sigma,maxfev=3000,p0=(10,1),
-                                      bounds=((-np.inf,0),
-                                     (np.inf,np.inf)))[0]
+def get_cffits(x, y, fit_id,sigma=None,r2fit=1,pwrlawconstant=False,expconstant=False):
+    popt_constfunc = curve_fit(constfunc, x, y,sigma=sigma,maxfev=3000, )[0]
+    if pwrlawconstant:
+        pwrlaw=pwrlawdecay2
+        popt_pwrlawdecay = curve_fit(pwrlaw, x, y,sigma=sigma,
+                                     maxfev=3000,p0=(10,0,1),
+                                     bounds=((0,-np.abs(np.min(y)),0),
+                                     (np.inf,np.abs(np.max(y)),np.inf)))[0]
+   
+    else:
+        pwrlaw=pwrlawdecay
+        popt_pwrlawdecay = curve_fit(pwrlaw, x, y,sigma=sigma,maxfev=3000,p0=(10,0,1),
+                                      #bounds=((0,0,0),((np.inf,np.abs(np.min(x)),np.inf))))[0]
+                                      bounds=(0,np.inf))[0]
+   
+
+    if expconstant:
+        exp=expdecay2
+        popt_expdecay = curve_fit(exp, x, y,sigma=sigma,
+                                     maxfev=3000,p0=(np.amax(x),0,1),
+                                     bounds=((0,-np.abs(np.min(y)),0),
+                                     (np.inf,np.abs(np.max(y)),np.inf)))[0]
+   
+    else:
+        exp=expdecay
+        popt_expdecay = curve_fit(exp, x, y,sigma=sigma,maxfev=3000,p0=(10,1),
+                                      bounds=(0,np.inf))[0]
    
     fit_ypreds = [constfunc(x, *popt_constfunc), 
-                  pwrlawdecay(x, *popt_pwrlawdecay), 
-                  expdecay(x, *popt_expdecay)]
+                  pwrlaw(x, *popt_pwrlawdecay), 
+                  exp(x, *popt_expdecay)]
     
     r2_scores = []
     rmse_scores = []
@@ -73,7 +83,7 @@ def get_cffits(x_, y_, fit_id,sigma=None,r2fit=1,):
         rmse_scores.append(rmse(y, ypred))
     
     fit_names = ['constant fit', 'power law fit','exponential fit']
-    fit_funcs = [constfunc, pwrlawdecay, expdecay]
+    fit_funcs = [constfunc, pwrlaw, exp]
     popts = [popt_constfunc, popt_pwrlawdecay, popt_expdecay]
     annotations = [
         r'$c\simeq ${:.2f}'.format(popts[0][-1]),
@@ -81,11 +91,11 @@ def get_cffits(x_, y_, fit_id,sigma=None,r2fit=1,):
         r'$\exp(-r/\xi): $($\xi\simeq ${:.4f})'.format(popts[2][-1])
     ]
     if r2fit==0:
-        min_id = np.argmin(np.abs(np.array(r2_scores)))
+        min_id = np.argmin(np.abs(np.array(r2_scores) - 1.))
     if r2fit==1:
         min_id = np.argmin(np.abs(np.array(rmse_scores)))
     if r2fit==2:
-        min_id = np.argmin(np.abs(np.array(r2_scores))+np.abs(np.array(rmse_scores)))
+        min_id = np.argmin(np.abs(np.array(r2_scores) - 1.)+np.abs(np.array(rmse_scores)))
         
     print(f'popt_constfunc (r2={r2_scores[0]:.5g}, rmse={rmse_scores[0]:.5g}): {popt_constfunc}')
     print(f'popt_pwrlawdecay (r2={r2_scores[1]:.5g}, rmse={rmse_scores[1]:.5g}): {popt_pwrlawdecay}')
@@ -212,7 +222,7 @@ def plot_boops(img_d,dpi=72,savename=False,kind=0,realdim=False,filetype='svg',a
     #return ax
 
 def plot_bocf(img_d, bins=100, fit_id=None,dist=6, dpi=72,savename=False,
-filetype='svg',realdim=False,start=7,xtype='linear',ylim=(1e-2,1.5),ytype='log',r2fit=1,figsize_=(10,6)):
+filetype='svg',realdim=False,start=7,xtype='linear',ytype='linear',r2fit=1,figsize_=(10,6)):
     """
     Plots the bond-orientational correlation function as a function of distance.
     """
@@ -235,148 +245,43 @@ filetype='svg',realdim=False,start=7,xtype='linear',ylim=(1e-2,1.5),ytype='log',
     xydata=np.array([[img_d.data['x'][i]*xscale,img_d.data['y'][i]*yscale] for i in range(img_d.data['x'].size)  ])
     points =np.array([[img_d.data['x'][i]*xscale,img_d.data['y'][i]*yscale,0] for i in range(img_d.data['x'].size)  ])
 
-    box = freud.box.Box(Lx=xdim*10, Ly=ydim*10, Lz=0, is2D=True) 
-    #Freud uses periodic boundaries, so making boundaries far and only calculating close
+    box = freud.box.Box(Lx=xdim, Ly=ydim, Lz=0, is2D=True)
     fpsi = freud.order.Hexatic(k=6, weighted=False)
-    cf = freud.density.CorrelationFunction(bins=bins, r_max=ydim*0.7)
+    cf = freud.density.CorrelationFunction(bins=bins, r_max=ydim*0.4999)
     fpsi.compute(system=(box, points))
     fpsi_complex = fpsi.particle_order
     cf.compute(system=(box, points), values=fpsi_complex)    
     cf_edges = cf.bin_edges[:-1] #/ sigma
-    cf_vals=np.real(cf.correlation)
-    cfpks = find_peaks(cf_vals, distance=dist,height=1e-10)[0]
-
+    cf_vals=cf.correlation
+    
     fig, ax = plt.subplots(figsize=figsize_, facecolor='w', constrained_layout=True, dpi=dpi)
-    ax.set(xlim=(cf_edges[cfpks[0]]*0.75, cf_edges[-1]*1.1))
-    ax.set(xscale=xtype,yscale=ytype,ylim=ylim)
+    
     ax.plot(cf_edges, cf_vals, 'o', ms=8, c='w', mec='b', zorder=2)
     ax.plot(cf_edges, cf_vals, lw=2.5, c='b', zorder=3) 
     
-    
+    cfpks = find_peaks(cf_vals, distance=dist)[0]
     idxlim = np.argwhere(cf_edges == cf_edges[cfpks][start])[0][0]-1
-    ax.plot(cf_edges[cfpks[start:]],cf_vals[cfpks[start:]], 'x', c='r', ms=14)
+    ax.plot(cf_edges[cfpks[start:]], cf_vals[cfpks[start:]], 'x', c='r', ms=14)
     
-    fit_func, popt, fit_text = get_cffits(cf_edges[cfpks[start:]], cf_vals[cfpks[start:]], fit_id,r2fit=r2fit)
-    ax.plot(cf_edges[idxlim:],np.exp(fit_func(np.log(cf_edges[idxlim:]), *popt)), '--', lw=2., c='k', zorder=9)
+    fit_func, popt, fit_text = get_cffits(cf_edges[cfpks[start:]], cf_vals[cfpks[start:]], fit_id,r2fit=r2fit,
+    pwrlawconstant=True,expconstant=False)
+    ax.plot(cf_edges[idxlim:], fit_func(cf_edges[idxlim:], *popt), '--', lw=2., c='k', zorder=9)
     
     ax.set(xlabel=r'$r$', ylabel=f'$g_{{6}}(r)$', title=f'Bond-orientational Correlation Function $g_{{6}}(r)$  |  {fit_text}')
     ax.set_title(
         label=f'Bond-orientational Correlation Function $g_{{6}}(r)$  |  {fit_text}',
         fontsize=20)
-
+    ax.set(xlim=(cf_edges[cfpks[0]]*0.75, cf_edges[-1]*1.1))
+    ax.set(xscale=xtype)
+    ax.set(yscale=xtype)
     if savename!=False:
         fig.savefig(savename, format=filetype)
     return plt.show()
 
 
-def find_recip_vector(img_d,radius,tolerance=100,realdim=False,grid_size=2048,lower=0.01,upper=1):
-    if realdim==False:
-        xdim, ydim = img_d.img.shape
-        xscale=1
-        yscale=1
-    else:
-        if img_d.sxm==True:
-            xdim=img_d.dims[0]
-            ydim=img_d.dims[1]
-        else:
-            xdim=realdim[0]
-            ydim=realdim[1]
-        xscale=xdim/img_d.img.shape[0]
-        yscale=ydim/img_d.img.shape[1]
-    xydata=np.array([[img_d.data['x'][i]*xscale,img_d.data['y'][i]*yscale] for i in range(img_d.data['x'].size)  ])
-    points =np.array([[img_d.data['x'][i]*xscale,img_d.data['y'][i]*yscale,0] for i in range(img_d.data['x'].size)  ])
-    points=points-points[1]
-    box3d = freud.Box.cube(L=xdim) 
-    ssf =  freud.diffraction.DiffractionPattern(grid_size=grid_size)
-    ssf.compute(system=(box3d, points))
-    ssfmin, ssfmax = np.min(ssf.k_values), np.max(ssf.k_values)
-
-    data=ssf.diffraction
-# Define the center coordinates
-    center_x = data.shape[0] // 2
-    center_y = data.shape[1] // 2
-
-# Define the radius of the center circle
-    center_radius = radius/ssfmax*(grid_size/2)  # Adjust this value as needed
-
-# Create a grid of distances from the center
-    x, y = np.ogrid[:data.shape[0], :data.shape[1]]
-    distances = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-
-# Create a circular mask to exclude the center region
-    mask = distances <= center_radius
-
-# Apply the mask to the array and find the maximum value
-    max_value = np.max(data[~mask])
-    peaks=(np.argwhere(np.abs(data-max_value)<tolerance)-(center_y,center_x))*ssfmax/(grid_size/2)
-    peaks=peaks[:,::-1]
-    peaks=peaks[np.sqrt((peaks[:,0]**2+peaks[:,1]**2))>radius]
-    extent=[ssfmin, ssfmax, ssfmin, ssfmax]
-    ssf_vals=ssf.to_image(cmap='afmhot',vmin=lower*ssf.N_points,vmax=upper*ssf.N_points)
-    
-    fig, ax = plt.subplots(1, 1, facecolor='w', constrained_layout=True,)
-    sfax = ax.imshow(ssf_vals, origin='lower', cmap='afmhot', extent=[ssfmin, ssfmax, ssfmin, ssfmax])
-    ax.set(xlabel=r'$k_{x}$', ylabel=r'$k_{y}$', title=r'2D Diffraction Pattern')
-    ax.scatter(peaks[:,0],peaks[:,1])
-    return peaks
-
-def plot_tocf(x,y,g, bins=100, fit_id=None,p_dist=6, dpi=72,savename=False,
-filetype='svg',realdim=False,start=7,xtype='log',ytype='log',r2fit=1,figsize_=(10,6)):
-    """
-    Plots the bond-orientational correlation function as a function of distance.
-    """
-    if realdim==False:
-        xdim, ydim = img_d.img.shape
-        xscale=1
-        yscale=1
-    else:
-        if img_d.sxm==True:
-            xdim=img_d.dims[0]
-            ydim=img_d.dims[1]
-        else:
-            xdim=realdim[0]
-            ydim=realdim[1]
-        xscale=xdim/img_d.img.shape[0]
-        yscale=ydim/img_d.img.shape[1]
-    points=np.array([[img_d.data['x'][i]*xscale,img_d.data['y'][i]*yscale] for i in range(img_d.data['x'].size)  ])
-    points=points-points[1]
-    rmax=xdim
-    box = freud.box.Box(Lx=rmax*5, Ly=rmax*5, Lz=0, is2D=True) 
-    #Freud uses periodic boundaries, so making boundaries far and only calculating close
-    #fpsi = freud.order.Hexatic(k=6, weighted=False)
-    cf = freud.density.CorrelationFunction(bins=bins, r_max=0.8*rmax)
-    #fpsi.compute(system=(box, points))
-    #fpsi_complex = fpsi.particle_order
-    fpsi_complex=np.exp(1j*np.dot(g,points.T))
-    cf.compute(system=(box, points), values=fpsi_complex)    
-    cf_edges = cf.bin_edges[:-1] #/ sigma
-    cf_vals=np.real(cf.correlation)
-    cfpks = find_peaks(cf_vals, distance=p_dist,height=1e-100)[0]
-
-    fig, ax = plt.subplots(figsize=figsize_, facecolor='w', constrained_layout=True, dpi=dpi)
-    ax.set(xlim=(cf_edges[cfpks[0]]*0.75, cf_edges[-1]*1.1))
-    #ax.set_ylim(np.min(cf_vals[cf_vals>0]),np.max(cf_vals[cf_vals>0])*1.1)
-    ax.set_ylim(top=2,bottom=1e-5)
-    ax.set(xscale=xtype)
-    ax.set(yscale=ytype)
-    ax.plot(cf_edges, cf_vals, 'o', ms=8, c='w', mec='b', zorder=2)
-    ax.plot(cf_edges, cf_vals, lw=2.5, c='b', zorder=3) 
-    
-    
-    idxlim = np.argwhere(cf_edges == cf_edges[cfpks][start])[0][0]-1
-    ax.plot(cf_edges[cfpks[start:]],cf_vals[cfpks[start:]], 'x', c='r', ms=14)
-    
-    fit_func, popt, fit_text = get_cffits(cf_edges[cfpks[start:]], cf_vals[cfpks[start:]], fit_id,r2fit=r2fit)
-    ax.plot((cf_edges[idxlim:]),np.exp( fit_func(np.log(cf_edges[idxlim:]), *popt)), '--', lw=2., c='k', zorder=9)
-    
-    ax.set(xlabel=r'$r$', ylabel=f'$g_{{q}}(r)$', title=f'Translational Correlation Function $g_{{q}}(r)$  |  {fit_text}')
-    ax.set_title(label=f'Translational Correlation Function $g_{{q}}(r)$  |  {fit_text}',
-                fontsize=20)
-    if savename!=False:
-        fig.savefig(savename, format=filetype)
-def plot_tocf2(img_d,g, bins=100,realdim=False, fit_id=None,
- p_dist=1,dpi=72,savename=False,filetype='svg',xtype='linear',
-               ytype='log',start=1,r2fit=1):
+def plot_tocf(img_d, bins=100,realdim=False, fit_id=None,
+ dist=6,dpi=72,savename=False,filetype='svg',xtype='linear',ytype='linear',start=1,r2fit=1):     
+#     sigma = np.sqrt(2. / ((3.**0.5) * sim.rho))
     if realdim==False:
         xdim, ydim = img_d.img.shape
         xscale=1
@@ -392,58 +297,43 @@ def plot_tocf2(img_d,g, bins=100,realdim=False, fit_id=None,
         yscale=ydim/img_d.img.shape[1]
 
      
-    points=np.array([[img_d.data['x'][i]*xscale,img_d.data['y'][i]*yscale] for i in range(img_d.data['x'].size)  ])
-    points=points-points[1]
-    rmax=xdim
+    xydata=np.array([[img_d.data['x'][i]*xscale,img_d.data['y'][i]*yscale] for i in range(img_d.data['x'].size)  ])
+    points =np.array([[img_d.data['x'][i]*xscale,img_d.data['y'][i]*yscale,0] for i in range(img_d.data['x'].size)  ])
 
-    bin_size=rmax/bins
-    n = points.shape[0]
-    pairwise_distances = []
-    pairs = []
     
-    for (i, j) in itertools.combinations(range(n), 2):
-        dist = np.linalg.norm(points[i] - points[j])
-        pairwise_distances.append(dist)
-        pairs.append((i, j))   
-    bins = defaultdict(list)    
-    for dist, pair in zip(pairwise_distances, pairs):
-        if dist <= rmax:
-            bin_index = math.ceil(dist / bin_size)
-            bins[bin_index].append(pair)
-    torders=[]
-    rs=[]
-    for bin_index in sorted(bins.keys()):
-        r=bin_index*bin_size-bin_size/2
-        rs.append(r)
-        prefactor=1/(2*np.pi*bin_size*r)
-        terms=[]
-        for pair in bins[bin_index]:
-            terms.append(np.exp(1j*np.dot(g,points[pair[0]]-points[pair[1]])))
-        torders.append(prefactor*np.array(terms).sum()/len(terms)) 
+    box = freud.box.Box(Lx=xdim, Ly=ydim, Lz=0, is2D=True)
+    translational_order = freud.order.Translational()
+    cf = freud.density.CorrelationFunction(bins=bins, r_max=ydim*0.4999)
+    cf_vals = []
+    translational_order.compute(system=(box, points))
+    torder_complex = translational_order.particle_order  # complex-valued
+    cf.compute(system=(box, points), values=torder_complex)    
+    cf_edges = cf.bin_edges[:-1] #/ sigma
+    cf_vals=cf.correlation
+    
     fig, ax = plt.subplots(figsize=(10, 6), facecolor='w', constrained_layout=True, dpi=dpi)
-    rs=np.array(rs)
-    torders=np.real(torders)
-    ax.plot(rs, torders, 'o', ms=8, c='w', mec='b', zorder=2)
-    ax.plot(rs, torders, lw=2.5, c='b', zorder=3)
-    cfpks = find_peaks(torders,distance=p_dist,height=1e-10)[0]
-    idxlim = np.argwhere(rs == rs[cfpks][start])[0][0]-1
-    ax.plot(rs[cfpks[start:]], torders[cfpks[start:]], 'x', c='r', ms=14)
     
-    fit_func, popt, fit_text = get_cffits(
-        rs[cfpks[start:]],
-        torders[cfpks[start:]], fit_id,r2fit=r2fit,)
-    ax.plot(rs[idxlim:],np.exp(np.log(fit_func(rs[idxlim:], *popt))), '--', lw=1.5, c='k', zorder=9)
-    #ax.plot(rs,np.exp(fit_func(rs), *popt), '--', lw=1.5, c='k', zorder=9)
-
+    ax.plot(cf_edges, cf_vals, 'o', ms=8, c='w', mec='b', zorder=2)
+    ax.plot(cf_edges, cf_vals, lw=2.5, c='b', zorder=3) 
+    
+    cfpks = find_peaks(cf_vals, distance=dist)[0]
+    idxlim = np.argwhere(cf_edges == cf_edges[cfpks][start])[0][0]-1
+    ax.plot(cf_edges[cfpks[start:]], cf_vals[cfpks[start:]], 'x', c='r', ms=14)
+    
+    fit_func, popt, fit_text = get_cffits(cf_edges[cfpks[start:]], cf_vals[cfpks[start:]], fit_id,r2fit=r2fit,pwrlawconstant=True)
+    ax.plot(cf_edges[idxlim:], fit_func(cf_edges[idxlim:], *popt), '--', lw=1.5, c='k', zorder=9)
+    
     ax.set(xlabel=r'$r$', ylabel=f'$g_{{q}}(r)$', title=f'Translational Correlation Function $g_{{q}}(r)$  |  {fit_text}')
     ax.set_title(label=f'Translational Correlation Function $g_{{q}}(r)$  |  {fit_text}',
                 fontsize=20)
+    ax.set(xlim=(cf_edges[cfpks[0]]*0.75, cf_edges[-1]*1.1))
     ax.set(xscale=xtype)
-    ax.set(yscale=ytype)
+    ax.set(yscale=xtype)
     if savename!=False:
         fig.savefig(savename, format=filetype)
-def plot_rdf(img_d, bins=85, realdim=False, step=-1,rho=1, peak_distance=1, xlim=None, dpi=72,savename=False,filetype='svg',fit_id=None,showpeak=True,r2fit=True,start=0,
-             xtype='linear',ytype='log'):
+    return plt.show()
+
+def plot_rdf(img_d, bins=85, realdim=False, step=-1,rho=1, peak_distance=1, xlim=None, dpi=72,savename=False,filetype='svg',fit_id=None,showpeak=True,r2fit=True,start=0):
     sigma = np.sqrt(2. / ((3.**0.5) * rho))
     if realdim==False:
         xdim, ydim = img_d.img.shape
@@ -474,8 +364,7 @@ def plot_rdf(img_d, bins=85, realdim=False, step=-1,rho=1, peak_distance=1, xlim
     
     ax.plot(rdf_edges, rdf_vals, 'o', ms=5, c='w', mec='b', zorder=2)
     ax.plot(rdf_edges, rdf_vals, lw=2.5, zorder=3, label=r'$g(r)$')
-    ax.set(xscale=xtype,
-           yscale=ytype)
+    
     rdfpks = find_peaks(rdf_vals, distance=peak_distance)[0]
     peaks3 = rdf_edges[rdfpks][:3]
     peakcolors = ['r', 'g', 'b']

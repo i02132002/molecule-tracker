@@ -30,7 +30,6 @@ from matplotlib.colors import BoundaryNorm
 import pySPM as spm 
 import scipy.misc
 from scipy import ndimage
-from frame_correct import Frame_correct
 
 
 {
@@ -71,23 +70,13 @@ class MotionAnalyzer:
     
     """
            
-    def __init__(self, fileranges=None, 
-    voltages_temperatures=None, folder_name = None, 
-    heater = False, drift_correction = False, 
-    frame_drift_par = None,correct=None,rotation_check=True,):
+    def __init__(self, fileranges=None, voltages_temperatures=None, folder_name = None, heater = False, drift_correction = False, manual_drift_particles = None,correct=None):
         
-        if isinstance(fileranges,type(None)):
-                       return
-           # print('no filerange or voltages/temperatures specified')
-           # return
-        #if len(fileranges) != len(voltages_temperatures):
-            #print('number of sets and voltages/temperatures don\'t match')
-        if frame_drift_par!=None:
-            self.frame_drift=True
-            self.frame_drift_par=frame_drift_par
-        else:
-            self.frame_drift=False
-
+        if any((fileranges == None) or (voltages_temperatures == None)):
+            print('no filerange or voltages/temperatures specified')
+            return
+        if len(fileranges) != len(voltages_temperatures):
+            print('number of sets and voltages/temperatures don\'t match')
         self.heater = heater
         self.drift_correction = drift_correction
         self.fileranges = fileranges
@@ -105,9 +94,7 @@ class MotionAnalyzer:
         self.correct=correct#Luc
         #self.analyze_drift()
         #self.plot_average_drift()
-        self.rotation_check=rotation_check
-        ## tracked particles
-        self.removed_particles = [[]]*self.voltages_temperatures.size
+    
     def analyze(self, plot_gif=False):
 
         #probably better to make this a dictionary
@@ -149,53 +136,23 @@ class MotionAnalyzer:
         self.rotated_D_constants_C = [[],[]]
         self.translated_D_constants_C = [[],[]]
         self.t3s_C=[[],[]]
-
+      
         
         
         for i, path in enumerate(self.SXM_PATH):
-            molecule_size, min_mass, max_mass, separation, min_size, max_ecc, adaptive_stop, search_range, _ = self.PARAMS[i]
-
             frames = SXMReader(path, correct=self.correct)
-            initial_size=frames.shape[1]
- 
-            self.NM_PER_PIXEL = frames.meters_per_pixel * 1e9 
-            if self.frame_drift:
-                frames=Frame_correct(frames,
-                (molecule_size, min_mass, 
-                max_mass, separation, min_size,
-                 max_ecc, adaptive_stop, search_range,),**self.frame_drift_par)
-
-
             self.frames.append(frames)
+            self.NM_PER_PIXEL = frames.meters_per_pixel * 1e9 
             print(path)
+            molecule_size, min_mass, max_mass, separation, min_size, max_ecc, adaptive_stop, search_range, _ = self.PARAMS[i]
             f = tp.batch(frames, molecule_size, minmass=min_mass, separation=separation,engine='python')
-            t = tp.link(f, search_range=search_range, adaptive_stop=adaptive_stop,memory=0)
-            delta=initial_size/2-molecule_size #removes fake particles caused by boundary
-            center=frames[0].shape[1]/2
-            t_=t[t['frame']==0]
-            inside_x=np.abs(t_['x']-center)<delta
-            inside_y=np.abs(t_['y']-center)<delta 
-             
-            good_y=t_[inside_y]['particle']
-            good_x=t_[inside_x]['particle']
-            t=t[t['particle'].isin(good_y)]     
-            t=t[t['particle'].isin(good_x)]     
-
+            t = tp.link(f, search_range=search_range, adaptive_stop=adaptive_stop,memory=7)
+   
             t1 = t[((t['mass'] > min_mass) & (t['size'] > min_size) &
                  (t['ecc'] < max_ecc)) & (t['mass'] < max_mass)]
-            
-            if not hasattr(self, "removed_particles"):
-                self.removed_particles = [[]]*self.voltages_temperatures.size
-            #Filter out particles
-            self.tracked_particles = t1[~t1['particle'].isin(self.removed_particles[i])]
-
-            # Apply filter_stubs to the updated tracked_particles instead of t1
-            stubs_max=int(np.shape(frames)[0]/2) #filters out trajectories with smaller frame lifetime than stubs_max
-            t2 = tp.filter_stubs(self.tracked_particles, stubs_max)
-
+            t2 = tp.filter_stubs(t, 3)
+            # Compare the number of particles in the unfiltered and filtered data.
             print('Before:', t['particle'].nunique())
-            print('Midle:', t1['particle'].nunique())
-            print('Midle:', self.tracked_particles['particle'].nunique())
             print('After:', t2['particle'].nunique())
             
             if plot_gif == True:
@@ -247,26 +204,22 @@ class MotionAnalyzer:
                 self.displacements_C[i].append(displacements)
                 
                 self.D_constants_C[i].append((displacements.dx.var() + displacements.dy.var()) / 4/ self.DIFFUSION_TIME) # r^2 = x^2 + y^2 = 2Dt + 2Dt
-                print('test')
                 self.mu_hats_C[i].append(np.mean(displacements[['dx', 'dy']], axis=0))
                 # Compute number of rotated molecules
-                if self.rotation_check:
-
-                    rotated = displacements.rotated.sum()
-                    moved = len( displacements[displacements.dr > 0.1].index)
-
-                    total_molecules = len(displacements.index)
-                    self.total_molecules_C[i].append(total_molecules)
-                    self.total_moved_C[i].append(moved)
-                    self.total_rotated_C[i].append(rotated)
-                    self.total_translated_C[i].append(moved-rotated)
-                    # Compute D separately for rotated and translated molecules
-                    rotated_displacements = displacements[(displacements.rotated==True)]
-                    translated_displacements = displacements[(displacements.rotated==False)]
-                    self.rotated_D_constants_C[i].append((rotated_displacements.dx.var() + rotated_displacements.dy.var()) / 4/ self.DIFFUSION_TIME)
-                    self.translated_D_constants_C[i].append((translated_displacements.dx.var() + translated_displacements.dy.var()) / 4/ self.DIFFUSION_TIME) 
+                rotated = displacements.rotated.sum()
+                moved = len( displacements[displacements.dr > 0.1].index)
+                total_molecules = len(displacements.index)
+                self.total_molecules_C[i].append(total_molecules)
+                self.total_moved_C[i].append(moved)
+                self.total_rotated_C[i].append(rotated)
+                self.total_translated_C[i].append(moved-rotated)
+                # Compute D separately for rotated and translated molecules
+                rotated_displacements = displacements[(displacements.rotated==True)]
+                translated_displacements = displacements[(displacements.rotated==False)]
+                self.rotated_D_constants_C[i].append((rotated_displacements.dx.var() + rotated_displacements.dy.var()) / 4/ self.DIFFUSION_TIME)
+                self.translated_D_constants_C[i].append((translated_displacements.dx.var() + translated_displacements.dy.var()) / 4/ self.DIFFUSION_TIME) 
                 #   Method 2 of calculating D: linear fit to MSD with weights
-                em = tp.emsd(t_both[i], self.NM_PER_PIXEL, self.DIFFUSION_TIME, max_lagtime=len(frames) ,detail=True)
+                em = tp.emsd(t_both[i], frames.meters_per_pixel*1e9, self.DIFFUSION_TIME, max_lagtime=len(frames) ,detail=True)
                 self.em_C[i].append(em)
                 self.ed_C[i].append([em['<x>'],em['<y>']])
                 X = em.index * self.DIFFUSION_TIME
@@ -358,12 +311,11 @@ class MotionAnalyzer:
                 displacements = displacements.append(tp.relate_frames(t, j, j + delta) * self.NM_PER_PIXEL, ignore_index=True)
         displacements = displacements.dropna()
         offset_theta = -15/180*np.pi
-        if self.rotation_check:
-            displacements['orientation'] = self._snap_to_orientation(displacements.angle)
-            displacements['orientation_b'] = self._snap_to_orientation(displacements.angle_b)
-            displacements["rotated"] = (displacements['orientation']!=displacements['orientation_b']).astype("int")
-        return displacements
-        print(f"Particles marked for removal: {self.removed_particles}")
+        displacements['orientation'] = self._snap_to_orientation(displacements.angle)
+        displacements['orientation_b'] = self._snap_to_orientation(displacements.angle_b)
+        displacements["rotated"] = (displacements['orientation']!=displacements['orientation_b']).astype("int")
+        return displacements    
+    
     def _set_search_params(self):
         with open('params.yaml') as f:
             params = yaml.load(f, Loader=yaml.FullLoader)       
@@ -534,26 +486,25 @@ class DiffusionPlotter(MotionAnalyzer):
             if scale=='log':
                 time=self.em[i].index * self.DIFFUSION_TIME
                 data=self.em[i]['msd']- self.msd_intercept[i]
+                 
                        
                 x = np.linspace(self.DIFFUSION_TIME/1.1, self.DIFFUSION_TIME *
                                 len(self.em[i])*1.1,100) 
                 ax.plot(x, self.msd_slope[i]*x, '--',  linewidth=6, color = self.colors[i])
 
             else: 
-                time=self.em[i].index * self.DIFFUSION_TIME
-                data=self.em[i]['msd']
+                time=np.concatenate(([0],self.em[i].index * self.DIFFUSION_TIME))
+                data=np.concatenate(([0],self.em[i]['msd']- self.msd_intercept[i]))
                  
                        
                 x = np.linspace(0, self.DIFFUSION_TIME *
                                 len(self.em[i])*1.1,100) 
                 fitfunc=lambda x,d,a:d*(x**a)
-                par,cov=curve_fit(fitfunc,self.em[i].index * self.DIFFUSION_TIME, self.em[i]['msd'])
+                par,cov=curve_fit(fitfunc,self.em[i].index * self.DIFFUSION_TIME, self.em[i]['msd']- self.msd_intercept[i])
               
                 d,a=par
-                print(f'a={a},d={d}')
+                print(f'a={a}')
                 ax.plot(x,d*x**a, '--',  linewidth=6, color = self.colors[i])
-            if np.sum(data<0)>0.5:
-                print('WARNING: A data point exists outside the graph')
             ax.plot(time,data,label= labeltext, markersize=20,marker='o', mfc = self.colors[i], mec=self.colors[i],linestyle='None')   
             ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
             #ax.legend(loc='center left')
